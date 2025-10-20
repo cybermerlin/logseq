@@ -6,7 +6,8 @@
             ["/frontend/selection" :as selection]
             ["/frontend/utils" :as utils]
             ["@capacitor/status-bar" :refer [^js StatusBar Style]]
-            ["@capgo/capacitor-navigation-bar" :refer [^js NavigationBar]]
+            ["@capacitor/core" :refer [Capacitor]]
+            ["@capacitor/clipboard" :as CapacitorClipboard]
             ["grapheme-splitter" :as GraphemeSplitter]
             ["sanitize-filename" :as sanitizeFilename]
             ["check-password-strength" :refer [passwordStrength]]
@@ -37,40 +38,6 @@
    [clojure.string :as string]
    [clojure.walk :as walk]))
 
-#?(:cljs (goog-define NODETEST false)
-   :clj (def NODETEST false))
-(defonce node-test? NODETEST)
-
-#?(:cljs
-   (extend-protocol IPrintWithWriter
-     symbol
-     (-pr-writer [sym writer _]
-       (-write writer (str "\"" (.toString sym) "\"")))))
-#?(:cljs
-   (extend-protocol INamed
-     UUID
-     (-name [this] (str this))
-     (-namespace [_] nil)))
-
-#?(:cljs (defonce ^js node-path utils/nodePath))
-#?(:cljs (defonce ^js sem-ver semver))
-#?(:cljs (defonce ^js full-path-extname pathCompleteExtname))
-#?(:cljs (defn app-scroll-container-node
-           ([]
-            (gdom/getElement "main-content-container"))
-           ([el]
-            (if (.closest el "#main-content-container")
-              (app-scroll-container-node)
-              (or
-               (gdom/getElementByClass "sidebar-item-list")
-               (app-scroll-container-node))))))
-#?(:cljs (defonce el-visible-in-viewport? utils/elementIsVisibleInViewport))
-#?(:cljs (defonce convert-to-roman utils/convertToRoman))
-#?(:cljs (defonce convert-to-letters utils/convertToLetters))
-#?(:cljs (defonce hsl2hex utils/hsl2hex))
-
-#?(:cljs (def string-join-path common-util/string-join-path))
-
 #?(:cljs
    (do
      (def safe-re-find common-util/safe-re-find)
@@ -79,25 +46,9 @@
        (when (string? s)
          (keyword (string/replace s " " "_"))))))
 
-#?(:cljs
-   (do
-     (def uuid-string? common-util/uuid-string?)
-     (defn check-password-strength
-       {:malli/schema [:=> [:cat :string] [:maybe
-                                           [:map
-                                            [:contains [:sequential :string]]
-                                            [:length :int]
-                                            [:id :int]
-                                            [:value :string]]]]}
-       [input]
-       (when-let [^js ret (and (string? input)
-                               (not (string/blank? input))
-                               (passwordStrength input))]
-         (bean/->clj ret)))
-     (defn safe-sanitize-file-name
-       {:malli/schema [:=> [:cat :string] :string]}
-       [s]
-       (sanitizeFilename (str s)))))
+#?(:cljs (goog-define NODETEST false)
+   :clj (def NODETEST false))
+(defonce node-test? NODETEST)
 
 #?(:cljs
    (do
@@ -125,7 +76,71 @@
        []
        (when-not node-test?
          (safe-re-find #"Mobi" js/navigator.userAgent)))
-     (def mobile? (memoize mobile*?))))
+     (def mobile? (memoize mobile*?))
+     (def capacitor? (memoize #(and js/window (gobj/get js/window "isCapacitorNew"))))))
+
+#?(:cljs
+   (extend-protocol IPrintWithWriter
+     symbol
+     (-pr-writer [sym writer _]
+       (-write writer (str "\"" (.toString sym) "\"")))))
+#?(:cljs
+   (extend-protocol INamed
+     UUID
+     (-name [this] (str this))
+     (-namespace [_] nil)))
+
+#?(:cljs (defonce ^js node-path utils/nodePath))
+#?(:cljs (defonce ^js sem-ver semver))
+#?(:cljs (defonce ^js full-path-extname pathCompleteExtname))
+#?(:cljs
+   (defn mobile-page-scroll
+     ([] (some-> (js/document.querySelector ".app-silk-index-scroll-content") (.-parentNode)))
+     ([el] (if el
+             (some-> (or (.closest el ".app-silk-scroll-content")
+                         (.closest el ".app-silk-index-scroll-content")) (.-parentNode))
+             (mobile-page-scroll)))))
+
+#?(:cljs (defn app-scroll-container-node
+           ([]
+            (if (capacitor?)
+              (mobile-page-scroll)
+              (gdom/getElement "main-content-container")))
+           ([el]
+            (if (capacitor?)
+              (mobile-page-scroll el)
+              (if (some-> el (.closest "#main-content-container"))
+                (app-scroll-container-node)
+                (or
+                 (gdom/getElementByClass "sidebar-item-list")
+                 (app-scroll-container-node)))))))
+#?(:cljs (defonce el-visible-in-viewport? utils/elementIsVisibleInViewport))
+#?(:cljs (defonce convert-to-roman utils/convertToRoman))
+#?(:cljs (defonce convert-to-letters utils/convertToLetters))
+#?(:cljs (defonce hsl2hex utils/hsl2hex))
+#?(:cljs (defonce base64string-to-unit8array utils/base64ToUint8Array))
+
+#?(:cljs (def string-join-path common-util/string-join-path))
+
+#?(:cljs
+   (do
+     (def uuid-string? common-util/uuid-string?)
+     (defn check-password-strength
+       {:malli/schema [:=> [:cat :string] [:maybe
+                                           [:map
+                                            [:contains [:sequential :string]]
+                                            [:length :int]
+                                            [:id :int]
+                                            [:value :string]]]]}
+       [input]
+       (when-let [^js ret (and (string? input)
+                               (not (string/blank? input))
+                               (passwordStrength input))]
+         (bean/->clj ret)))
+     (defn safe-sanitize-file-name
+       {:malli/schema [:=> [:cat :string] :string]}
+       [s]
+       (sanitizeFilename (str s)))))
 
 #?(:cljs
    (do
@@ -152,10 +167,6 @@
                     (not (mobile-util/native-platform?))))
      (def web-platform? nfs?)
      (def plugin-platform? (or (and web-platform? (not common-config/PUBLISHING)) (electron?)))))
-#?(:cljs
-   (defn file-protocol?
-     []
-     (string/starts-with? js/window.location.href "file://")))
 
 #?(:cljs
    (def format common-util/format))
@@ -201,54 +212,17 @@
      []
      (gobj/get js/window "innerWidth")))
 
-;; Keep the following colors in sync with common.css
-#?(:cljs
-   (defn- get-computed-bg-color
-     []
-     ;; window.getComputedStyle(document.body, null).getPropertyValue('background-color');
-     (let [styles (js/window.getComputedStyle js/document.body)
-           bg-color (gobj/get styles "background-color")
-           ;; convert rgb(r,g,b) to #rrggbb
-           rgb2hex (fn [rgb]
-                     (->> rgb
-                          (map (comp #(.toString % 16) parse-long string/trim))
-                          (map #(if (< (count %) 2)
-                                  (str "0" %)
-                                  %))
-                          (string/join)
-                          (str "#")))]
-       (when (string/starts-with? bg-color "rgb")
-         (let [rgb (-> bg-color
-                       (string/replace #"^rgb[^\d]+" "")
-                       (string/replace #"\)$" "")
-                       (string/split #","))
-               rgb (take 3 rgb)]
-           (rgb2hex rgb))))))
-
-#?(:cljs
-   (defn set-android-theme
-     []
-     (let [f #(when (mobile-util/native-android?)
-                (when-let [bg-color (try (get-computed-bg-color)
-                                         (catch :default _
-                                           nil))]
-                  (.setNavigationBarColor NavigationBar (clj->js {:color bg-color}))
-                  (.setBackgroundColor StatusBar (clj->js {:color bg-color}))))]
-       (js/setTimeout f 32))))
-
 #?(:cljs
    (defn set-theme-light
      []
      (p/do!
-      (.setStyle StatusBar (clj->js {:style (.-Light Style)}))
-      (set-android-theme))))
+      (.setStyle StatusBar (clj->js {:style (.-Light Style)})))))
 
 #?(:cljs
    (defn set-theme-dark
      []
      (p/do!
-      (.setStyle StatusBar (clj->js {:style (.-Dark Style)}))
-      (set-android-theme))))
+      (.setStyle StatusBar (clj->js {:style (.-Dark Style)})))))
 
 (defn find-first
   [pred coll]
@@ -283,11 +257,7 @@
                            (.then #(on-ok %)))
                        (on-failed resp)))))))))
 
-(defn zero-pad
-  [n]
-  (if (< n 10)
-    (str "0" n)
-    (str n)))
+#?(:cljs (def zero-pad common-util/zero-pad))
 
 #?(:cljs
    (defn safe-parse-int
@@ -802,6 +772,14 @@
 #?(:cljs (def clear-selection! selection/clearSelection))
 
 #?(:cljs
+   (defn write-clipboard
+     ([data] (write-clipboard data nil))
+     ([data owner-window]
+      (if (.isNativePlatform ^js Capacitor)
+        (.write (gobj/get CapacitorClipboard "Clipboard") #js {:string (gobj/get data "text")})
+        (utils/writeClipboard data owner-window)))))
+
+#?(:cljs
    (defn copy-to-clipboard!
      [text & {:keys [graph html blocks embed-block? owner-window]}]
      (let [blocks (map (fn [block] (if (de/entity? block)
@@ -819,8 +797,8 @@
                                :embed-block? embed-block?
                                :blocks (mapv #(dissoc % :block.temp/load-status %) blocks)}))}))]
        (if owner-window
-         (utils/writeClipboard data owner-window)
-         (utils/writeClipboard data)))))
+         (write-clipboard data owner-window)
+         (write-clipboard data)))))
 
 (defn drop-nth [n coll]
   (keep-indexed #(when (not= %1 n) %2) coll))
@@ -1044,8 +1022,7 @@
                      (d/set-attr! :type "text/css")
                      (d/set-attr! :href style)
                      (d/set-attr! :media "all"))]
-           (d/append! parent-node link))
-         (set-android-theme)))))
+           (d/append! parent-node link))))))
 
 (defn remove-common-preceding
   [col1 col2]
@@ -1123,7 +1100,7 @@
 
 (defn keyname [key] (str (namespace key) "/" (name key)))
 
-;; FIXME: drain-chan was copied from frontend.worker.util due to shadow-cljs compile bug
+;; FIXME: drain-chan was copied from frontend.worker-common.util due to shadow-cljs compile bug
 #?(:cljs
    (defn drain-chan
      "drop all stuffs in CH, and return all of them"
@@ -1254,53 +1231,28 @@
            (= button 2)))))
 
 (def keyboard-height (atom nil))
+
 #?(:cljs
    (defn scroll-editor-cursor
-     [^js/HTMLElement el & {:keys [to-vw-one-quarter?]}]
-     (when (and el (mobile?))
-       (let [box-rect    (.getBoundingClientRect el)
-             box-top     (.-top box-rect)
-             box-bottom  (.-bottom box-rect)
-
-             header-height (-> (gdom/getElementByClass "cp__header")
-                               .-clientHeight)
-
-             main-node   (app-scroll-container-node el)
-             scroll-top'  (.-scrollTop main-node)
-
-             current-pos (get-selection-start el)
-             grapheme-pos (get-graphemes-pos (.-value el) current-pos)
-             mock-text   (some-> (gdom/getElement "mock-text")
-                                 gdom/getChildren
-                                 array-seq
-                                 (nth-safe grapheme-pos))
-             offset-top   (and mock-text (.-offsetTop mock-text))
-             offset-height (and mock-text (.-offsetHeight mock-text))
-
-             cursor-y    (if offset-top (+ offset-top box-top offset-height 2) box-bottom)
-             vw-height   (or (.-height js/window.visualViewport)
-                             (.-clientHeight js/document.documentElement))
-             ;; mobile toolbar height: 40px
-             scroll      (- cursor-y (- vw-height (+ @keyboard-height (+ 40 4))))]
-         (cond
-           (and to-vw-one-quarter? (> cursor-y (* vw-height 0.4)))
-           (set! (.-scrollTop main-node) (+ scroll-top' (- cursor-y (/ vw-height 4))))
-
-           (and (< cursor-y (+ header-height offset-height 4)) ;; 4 is top+bottom padding for per line
-                (>= cursor-y header-height))
-           (.scrollBy main-node (bean/->js {:top (- (+ offset-height 4))}))
-
-           (< cursor-y header-height)
-           (let [_ (.scrollIntoView el true)
-                 main-node (app-scroll-container-node el)
-                 scroll-top' (.-scrollTop main-node)]
-             (set! (.-scrollTop main-node) (- scroll-top' (/ vw-height 4))))
-
-           (> scroll 0)
-           (set! (.-scrollTop main-node) (+ scroll-top' scroll))
-
-           :else
-           nil)))))
+     ([el] (scroll-editor-cursor el true))
+     ([^js/HTMLElement el start?]
+      (when (and el (mobile?)
+              ;; start? selection
+                 (or (not start?) (zero? (get-selection-start el))))
+        (when-let [scroll-node (app-scroll-container-node el)]
+          (let [scroll-top' (.-scrollTop scroll-node)
+                vw-height (if (mobile-util/native-platform?)
+                            (- (.-height js/window.screen) (or @keyboard-height 312))
+                            (or (.-height js/window.visualViewport)
+                                (.-clientHeight js/document.documentElement)))
+                ^js box-rect (.getBoundingClientRect el)
+                box-top (.-top box-rect)
+                top-offset 84
+                inset (- box-top (- vw-height top-offset))]
+            (when (> inset 0)
+              (js/setTimeout
+               #(set! (.-scrollTop scroll-node)
+                      (+ scroll-top' inset (if (false? start?) 96 64))) 16))))))))
 
 #?(:cljs
    (do
@@ -1394,9 +1346,7 @@
 #?(:cljs
    (def JS_ROOT
      (when-not node-test?
-       (if (= js/location.protocol "file:")
-         "./js"
-         "./static/js"))))
+       "./js")))
 
 #?(:cljs
    (defn js-load$
@@ -1494,21 +1444,6 @@ Arg *stop: atom, reset to true to stop the loop"
                (async/<! (async/timeout 5000))
                (recur))))))))
 
-(defmacro concatv
-  "Vector version of concat. non-lazy"
-  [& args]
-  `(vec (concat ~@args)))
-
-(defmacro mapcatv
-  "Vector version of mapcat. non-lazy"
-  [f coll & colls]
-  `(vec (mapcat ~f ~coll ~@colls)))
-
-(defmacro removev
-  "Vector version of remove. non-lazy"
-  [pred coll]
-  `(vec (remove ~pred ~coll)))
-
 ;; from rum
 #?(:cljs
    (def schedule
@@ -1544,8 +1479,23 @@ Arg *stop: atom, reset to true to stop the loop"
        (some-> target (.querySelector ".CodeMirror") (.-CodeMirror)))))
 
 #?(:cljs
+   (defn get-keep-keyboard-input-el
+     ([] (get-keep-keyboard-input-el ""))
+     ([t]
+      (js/document.getElementById (str "keep-keyboard-open-input" t)))))
+
+#?(:cljs
    (defn mobile-keep-keyboard-open
+     ([]
+      (mobile-keep-keyboard-open true))
+     ([schedule?]
+      (when (mobile?)
+        (let [f #(when-let [node (or (get-keep-keyboard-input-el "in-modal")
+                                     (get-keep-keyboard-input-el))]
+                   (.focus node))]
+          (if schedule? (schedule f) (f)))))))
+
+#?(:cljs
+   (defn rtc-test?
      []
-     (when mobile?
-       (when-let [node (gdom/getElement "app-keep-keyboard-open-input")]
-         (.focus node)))))
+     (string/includes? js/window.location.search "?rtc-test=true")))

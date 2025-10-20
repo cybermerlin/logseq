@@ -1,17 +1,21 @@
 (ns frontend.handler.search
   "Provides util handler fns for search"
   (:require [clojure.string :as string]
-            [frontend.config :as config]
+            [dommy.core :as dom]
+            [electron.ipc :as ipc]
+            [frontend.common.missionary :as c.m]
             [frontend.common.search-fuzzy :as fuzzy]
+            [frontend.config :as config]
             [frontend.db :as db]
             [frontend.handler.notification :as notification]
             [frontend.search :as search]
             [frontend.state :as state]
+            [frontend.storage :as storage]
             [frontend.util :as util]
-            [promesa.core :as p]
+            [logseq.db :as ldb]
             [logseq.graph-parser.text :as text]
-            [electron.ipc :as ipc]
-            [dommy.core :as dom]))
+            [missionary.core :as m]
+            [promesa.core :as p]))
 
 (defn sanity-search-content
   "Convert a block to the display contents for searching"
@@ -84,9 +88,9 @@
 (defn loop-find-in-page!
   [backward?]
   (if (and (get-in @state/state [:ui/find-in-page :active?])
-             (not (state/editing?)))
+           (not (state/editing?)))
     (do (state/set-state! [:ui/find-in-page :backward?] backward?)
-      (debounced-search))
+        (debounced-search))
     ;; return false to skip prevent default event behavior (Enter key)
     false))
 
@@ -114,11 +118,22 @@
    (rebuild-indices! false))
   ([notice?]
    (println "Starting to rebuild search indices!")
-   (p/let [_ (search/rebuild-indices!)]
-     (when notice?
-       (notification/show!
-        "Search indices rebuilt successfully!"
-        :success)))))
+   (when-let [repo (state/get-current-repo)]
+     (p/do!
+      (search/rebuild-indices!)
+      (when (ldb/get-key-value (db/get-db) :logseq.kv/graph-text-embedding-model-name)
+        (c.m/run-task
+          ::rebuild-embeddings
+          (m/sp
+            (c.m/<?
+             (state/<invoke-db-worker :thread-api/vec-search-cancel-indexing repo))
+            (c.m/<?
+             (state/<invoke-db-worker :thread-api/vec-search-embedding-graph repo {:reset-embedding? true})))
+          :succ (constantly nil)))
+      (when notice?
+        (notification/show!
+         "Search indices rebuilt successfully!"
+         :success))))))
 
 (defn highlight-exact-query
   [content q]
@@ -157,3 +172,18 @@
                                         result)))
                              (conj result [:span content])))]
             [:p {:class "m-0"} elements]))))))
+
+(defn get-recents
+  []
+  (storage/get :recent-search-items))
+
+(defn add-recent!
+  [item]
+  (when-not (string/blank? item)
+    (let [recents (get-recents)]
+      (storage/set :recent-search-items
+                   (distinct (take 20 (cons item recents)))))))
+
+(defn clear-recents!
+  []
+  (storage/remove :recent-search-items))

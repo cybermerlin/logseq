@@ -1,7 +1,7 @@
 (ns ^:node-only logseq.graph-parser.exporter-test
   (:require ["fs" :as fs]
             ["path" :as node-path]
-            [cljs.test :refer [testing is are deftest]]
+            [cljs.test :refer [are deftest is testing]]
             [clojure.set :as set]
             [clojure.string :as string]
             [datascript.core :as d]
@@ -94,16 +94,24 @@
    ;; TODO: Add actual default
    :default-config {}})
 
-;; Copied from db-import
-(defn- <read-asset-file [file assets]
+;; tweaked from db-import
+(defn- <read-and-copy-asset [file assets buffer-handler *asset-ids]
   (p/let [buffer (fs/readFileSync (:path file))
-          checksum (db-asset/<get-file-array-buffer-checksum buffer)]
-    (swap! assets assoc
-           (gp-exporter/asset-path->name (:path file))
-           {:size (.-length buffer)
-            :checksum checksum
-            :type (db-asset/asset-path->type (:path file))
-            :path (:path file)})))
+          checksum (db-asset/<get-file-array-buffer-checksum buffer)
+          asset-id (d/squuid)
+          asset-name (gp-exporter/asset-path->name (:path file))
+          asset-type (db-asset/asset-path->type (:path file))
+          {:keys [with-edn-content pdf-annotation?]} (buffer-handler buffer)]
+    (when-not pdf-annotation?
+      (swap! *asset-ids conj asset-id))
+    (swap! assets assoc asset-name
+           (with-edn-content
+             {:size (.-length buffer)
+              :type asset-type
+              :path (:path file)
+              :checksum checksum
+              :asset-id asset-id}))
+    buffer))
 
 ;; Copied from db-import script and tweaked for an in-memory import
 (defn- import-file-graph-to-db
@@ -117,12 +125,8 @@
         options' (merge default-export-options
                         {:user-options (merge {:convert-all-tags? false} (dissoc options :assets :verbose))
                         ;; asset file options
-                         :<read-asset <read-asset-file
-                         :<copy-asset (fn copy-asset [m]
-                                        (when-not (:block/uuid m)
-                                          (println "[INFO]" "Asset" (pr-str (node-path/basename (:path m)))
-                                                   "does not have a :block/uuid"))
-                                        (swap! assets conj m))}
+                         :<read-and-copy-asset (fn [file *assets buffer-handler]
+                                                 (<read-and-copy-asset file *assets buffer-handler assets))}
                         (select-keys options [:verbose]))]
     (gp-exporter/export-file-graph conn conn config-file *files options')))
 
@@ -194,7 +198,7 @@
   ;; This graph will contain basic examples of different features to import
   (p/let [file-graph-dir "test/resources/exporter-test-graph"
           conn (db-test/create-conn)
-          ;; Calculate refs and path-refs like frontend
+          ;; Calculate refs like frontend
           _ (db-pipeline/add-listener conn)
           assets (atom [])
           {:keys [import-state]} (import-file-graph-to-db file-graph-dir conn {:assets assets :convert-all-tags? true})]
@@ -206,12 +210,14 @@
 
       ;; Counts
       ;; Includes journals as property values e.g. :logseq.property/deadline
-      (is (= 26 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Journal]] @conn))))
+      (is (= 29 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Journal]] @conn))))
 
-      (is (= 3 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Asset]] @conn))))
+      (is (= 5 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Asset]] @conn))))
       (is (= 4 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Task]] @conn))))
       (is (= 4 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Query]] @conn))))
       (is (= 2 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Card]] @conn))))
+      (is (= 4 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Quote-block]] @conn))))
+      (is (= 2 (count (d/q '[:find ?b :where [?b :block/tags :logseq.class/Pdf-annotation]] @conn))))
 
       ;; Properties and tags aren't included in this count as they aren't a Page
       (is (= 10
@@ -234,7 +240,7 @@
       (is (= 0 (count @(:ignored-properties import-state))) "No ignored properties")
       (is (= 0 (count @(:ignored-assets import-state))) "No ignored assets")
       (is (= 1 (count @(:ignored-files import-state))) "Ignore .edn for now")
-      (is (= 3 (count @assets))))
+      (is (= 5 (count @assets))))
 
     (testing "logseq files"
       (is (= ".foo {}\n"
@@ -252,7 +258,7 @@
               set))))
 
     (testing "user properties"
-      (is (= 19
+      (is (= 20
              (->> @conn
                   (d/q '[:find [(pull ?b [:db/ident]) ...]
                          :where [?b :block/tags :logseq.class/Property]])
@@ -330,10 +336,11 @@
                  date-time-util/ms->journal-day))
           "deadline block has correct journal as property value")
 
-      (is (= 20221125
-             (-> (db-test/readable-properties (db-test/find-block-by-content @conn "only scheduled"))
-                 :logseq.property/scheduled
-                 date-time-util/ms->journal-day))
+      (is (= {:logseq.property/scheduled 20221125
+              :logseq.property/deadline 20221125}
+             (-> (db-test/readable-properties (db-test/find-block-by-content @conn #"deadline and scheduled"))
+                 (select-keys [:logseq.property/scheduled :logseq.property/deadline])
+                 (update-vals date-time-util/ms->journal-day)))
           "scheduled block converted to correct deadline")
 
       (is (= 1 (count (d/q '[:find [(pull ?b [*]) ...]
@@ -394,10 +401,10 @@
               :logseq.property/query "{:query (task todo doing)}"
               :block/tags [:logseq.class/Query]
               :logseq.property.table/ordered-columns [:block/title]}
-             (db-test/readable-properties (db-test/find-block-by-content @conn #"tasks with")))
+             (db-test/readable-properties (db-test/find-block-by-content @conn #"tasks with todo")))
           "Advanced query has correct query properties")
       (is (= "tasks with todo and doing"
-             (:block/title (db-test/find-block-by-content @conn #"tasks with")))
+             (:block/title (db-test/find-block-by-content @conn #"tasks with todo")))
           "Advanced query has custom title migrated")
 
       ;; Cards
@@ -415,7 +422,63 @@
           "Asset has correct properties")
       (is (= (d/entity @conn :logseq.class/Asset)
              (:block/page (db-test/find-block-by-content @conn "greg-popovich-thumbs-up_1704749687791_0")))
-          "Imported into Asset page"))
+          "Imported into Asset page")
+
+      ;; Annotations
+      (is (= {:logseq.property.pdf/hl-color :logseq.property/color.blue
+              :logseq.property.pdf/hl-page 8
+              :block/tags [:logseq.class/Pdf-annotation]
+              :logseq.property/asset "Sina_de_Capoeria_Batizado_2025_-_Program_Itinerary_1752179325104_0"}
+             (dissoc (db-test/readable-properties (db-test/find-block-by-content @conn #"Duke School - modified"))
+                     :logseq.property.pdf/hl-value :logseq.property/ls-type))
+          "Pdf text highlight has correct properties")
+      (is (= ["note about duke" "sub note"]
+             (mapv :block/title (rest (ldb/get-block-and-children @conn (:block/uuid (db-test/find-block-by-content @conn #"Duke School - modified"))))))
+          "Pdf text highlight has correct children blocks")
+      (is (= {:logseq.property.pdf/hl-color :logseq.property/color.yellow
+              :logseq.property.pdf/hl-page 1
+              :block/tags [:logseq.class/Pdf-annotation]
+              :logseq.property/asset "Sina_de_Capoeria_Batizado_2025_-_Program_Itinerary_1752179325104_0"
+              :logseq.property.pdf/hl-image "pdf area highlight"
+              :logseq.property.pdf/hl-type :area}
+             (dissoc (->> (d/q '[:find [?b ...]
+                                 :where [?b :block/tags :logseq.class/Pdf-annotation] [?b :block/title ""]] @conn)
+                          first
+                          (d/entity @conn)
+                          db-test/readable-properties)
+                     :logseq.property.pdf/hl-value :logseq.property/ls-type))
+          "Pdf area highlight has correct properties")
+
+      ;; Quotes
+      (is (= {:block/tags [:logseq.class/Quote-block]
+              :logseq.property.node/display-type :quote}
+             (db-test/readable-properties (db-test/find-block-by-content @conn #"Saito"))))
+      (is (= "markdown quote\n[[wut]]\nline 3"
+             (:block/title (db-test/find-block-by-content @conn #"markdown quote")))
+          "Markdown quote imports as full multi-line quote")
+      (is (= "*Italic* ~~Strikethrough~~ ^^Highlight^^ #[[foo]]\n**Learn Datalog Today** is an interactive tutorial designed to teach you the [Datomic](http://datomic.com/) dialect of [Datalog](http://en.wikipedia.org/wiki/Datalog). Datalog is a declarative **database query language** with roots in logic programming. Datalog has similar expressive power as [SQL](http://en.wikipedia.org/wiki/Sql)."
+             (:block/title (db-test/find-block-by-content @conn #"Learn Datalog")))
+          "Imports full quote with various ast types"))
+
+    (testing "embeds"
+      (is (= {:block/title ""}
+             (-> (d/q '[:find [(pull ?b [*]) ...]
+                        :in $ ?title
+                        :where [?b :block/link ?l] [?b :block/page ?bp] [?bp :block/journal-day 20250612] [?l :block/title ?title]]
+                      @conn
+                      "page embed")
+                 first
+                 (select-keys [:block/title])))
+          "Page embed linked correctly")
+      (is (= {:block/title ""}
+             (-> (d/q '[:find [(pull ?b [*]) ...]
+                        :in $ ?title
+                        :where [?b :block/link ?l] [?b :block/page ?bp] [?bp :block/journal-day 20250612] [?l :block/title ?title]]
+                      @conn
+                      "test block embed")
+                 first
+                 (select-keys [:block/title])))
+          "Block embed linked correctly"))
 
     (testing "tags convert to classes"
       (is (= :user.class/Quotes___life
@@ -491,7 +554,11 @@
         (is (= "20"
                (:user.property/duration (db-test/readable-properties (db-test/find-block-by-content @conn "existing :number to :default"))))
             "existing :number property value correctly saved as :default")
+        (is (= :default
+               (:logseq.property/type (d/entity @conn :user.property/people2)))
+            ":node property changes to :default when :node is defined in same file")
 
+        ;; tests :node :many to :default transition after :node is defined in separate file
         (is (= {:logseq.property/type :default :db/cardinality :db.cardinality/many}
                (select-keys (d/entity @conn :user.property/people) [:logseq.property/type :db/cardinality]))
             ":node property to :default value changes to :default and keeps existing cardinality")
@@ -522,16 +589,12 @@
       (is (= "multiline block\na 2nd\nand a 3rd" (:block/title (db-test/find-block-by-content @conn #"multiline block"))))
       (is (= "logbook block" (:block/title (db-test/find-block-by-content @conn #"logbook block")))))
 
-    (testing ":block/refs and :block/path-refs"
+    (testing ":block/refs"
       (let [page (db-test/find-page-by-title @conn "chat-gpt")]
         (is (set/subset?
              #{"type" "LargeLanguageModel"}
              (->> page :block/refs (map #(:block/title (d/entity @conn (:db/id %)))) set))
-            "Page has correct property and property value :block/refs")
-        (is (set/subset?
-             #{"type" "LargeLanguageModel"}
-             (->> page :block/path-refs (map #(:block/title (d/entity @conn (:db/id %)))) set))
-            "Page has correct property and property value :block/path-refs"))
+            "Page has correct property and property value :block/refs"))
 
       (let [block (db-test/find-block-by-content @conn "old todo block")]
         (is (set/subset?
@@ -540,14 +603,7 @@
                   :block/refs
                   (map #(:db/ident (d/entity @conn (:db/id %))))
                   set))
-            "Block has correct task tag and property :block/refs")
-        (is (set/subset?
-             #{:logseq.property/status :logseq.class/Task}
-             (->> block
-                  :block/path-refs
-                  (map #(:db/ident (d/entity @conn (:db/id %))))
-                  set))
-            "Block has correct task tag and property :block/path-refs")))
+            "Block has correct task tag and property :block/refs")))
 
     (testing "whiteboards"
       (let [block-with-props (db-test/find-block-by-content @conn #"block with props")]
@@ -727,9 +783,9 @@
                 set))
         "All classes are correctly defined by :type")
 
-    (is (= "CreativeWork" (get-in (d/entity @conn :user.class/Movie) [:logseq.property.class/extends :block/title]))
+    (is (= ["CreativeWork"] (map :block/title (:logseq.property.class/extends (d/entity @conn :user.class/Movie))))
         "Existing page correctly set as class parent")
-    (is (= "Thing" (get-in (d/entity @conn :user.class/CreativeWork) [:logseq.property.class/extends :block/title]))
+    (is (= ["Thing"] (map :block/title (:logseq.property.class/extends (d/entity @conn :user.class/CreativeWork))))
         "New page correctly set as class parent")))
 
 (deftest-async export-files-with-property-pages-disabled

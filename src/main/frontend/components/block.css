@@ -25,26 +25,6 @@
     }
   }
 
-  .asset-container {
-    @apply relative inline-block mt-2 w-full;
-
-    .asset-action-bar {
-      @apply top-0.5 right-0.5 absolute flex items-center
-      border bg-gray-02 rounded opacity-0 transition-opacity;
-    }
-
-    .asset-action-btn {
-      @apply m-1 p-0.5 truncate flex items-center opacity-70 select-none
-      hover:opacity-90 active:opacity-60;
-    }
-
-    &:hover, &:active {
-      .asset-action-bar {
-        @apply opacity-100;
-      }
-    }
-  }
-
   .draw [aria-labelledby="shapes-title"] {
     position: absolute;
     left: 50%;
@@ -114,6 +94,12 @@
         opacity: 1;
       }
     }
+  }
+}
+
+.breadcrumb {
+  .property-value-inner[data-type], .property-value-inner .select-item {
+    display: inline;
   }
 }
 
@@ -483,7 +469,7 @@
 
   &[data-has-heading="2"], &:has(textarea.h2) {
     > .block-control-wrap {
-      @apply relative top-3;
+      @apply relative top-2.5;
     }
 
     .block-content-or-editor-wrap {
@@ -534,6 +520,11 @@
 
 .ls-block {
   @apply flex-1 relative py-0.5 transition-[background-color] mx-auto;
+  width: 100%;
+  transform: translateX(0);
+  transition: transform 0.3s ease;
+  will-change: transform;
+
   container-type: inline-size;
   container-name: ls-block;
 
@@ -542,12 +533,16 @@
   }
 }
 
+.ls-table .ls-block {
+  container-type: initial;
+}
+
 #main-content-container, #right-sidebar {
     container-type: inline-size;
 }
 
 @container (max-width: 600px) {
-    .time-spent, .positioned-properties.block-right, .view-actions, .ls-page-title .block-tags {
+    .time-spent, .positioned-properties.block-right, .view-actions {
         display: none;
     }
 
@@ -1049,6 +1044,17 @@ html.is-mac {
   height: 18px;
 }
 
+.katex svg {
+  width: initial;
+  height: initial;
+}
+.math-block {
+    @apply w-full;
+    .latex {
+        @apply w-full;
+    }
+}
+
 .ls-small-icon svg {
     width: 12px;
     height: 12px;
@@ -1062,7 +1068,23 @@ html.is-mac {
   height: 38px;
 }
 
-.ls-page-title .positioned-properties svg, .page-ref svg {
+.ls-page-title .positioned-properties.block-left svg,
+.ls-page-title .positioned-properties.block-right svg {
+  width: 24px;
+  height: 24px;
+}
+
+.ls-page-title .positioned-properties.block-below {
+  margin-left: 7px;
+}
+
+.ls-page-title .ls-properties-area .positioned-properties.block-left svg,
+.ls-page-title .ls-properties-area .positioned-properties.block-right svg {
+  width: initial;
+  height: initial;
+}
+
+.page-ref svg {
   width: 16px;
   height: 16px;
 }
@@ -1070,6 +1092,10 @@ html.is-mac {
 .ls-page-title {
   .positioned-properties, .time-spent {
     margin-top: 15px;
+  }
+
+  .block-tags {
+    margin-top: 17px;
   }
 }
 
@@ -1109,7 +1135,7 @@ html.is-mac {
 }
 
 .ls-resize-image {
-  @apply flex relative;
+  @apply flex relative w-fit cursor-pointer;
 
   .handle-left, .handle-right {
     @apply absolute w-[6px] h-[15%] min-h-[30px] bg-black/30 hover:bg-black/70
@@ -1144,6 +1170,33 @@ html.is-mac {
     }
 }
 
+.swipe-item {
+  touch-action: pan-y; /* disables horizontal scrolling on touch */
+}
+
 .ls-dialog-block {
-    @apply !w-[90dvw] !h-[75%] !max-w-4xl bg-gray-02 overflow-scroll;
+  @apply !w-[90dvw] !h-[75%] !max-w-4xl bg-gray-02 overflow-scroll;
+}
+
+.asset-container {
+    @apply relative inline-block mt-2 w-full;
+
+    .asset-action-bar {
+        @apply top-1 right-1 absolute flex items-center opacity-0 transition-opacity;
+
+        &[data-popup-active] {
+            @apply opacity-100;
+        }
+    }
+
+    .asset-action-btn {
+        @apply m-1 p-0.5 truncate flex items-center opacity-70 select-none
+        hover:opacity-90 active:opacity-60;
+    }
+
+    &:hover, &:active {
+        .asset-action-bar {
+            @apply opacity-100;
+        }
+    }
 }

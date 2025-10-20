@@ -10,18 +10,17 @@
             [logseq.db.common.entity-util :as common-entity-util]
             [logseq.db.common.order :as db-order]
             [logseq.db.frontend.class :as db-class]
+            [logseq.db.frontend.db :as db-db]
             [logseq.db.frontend.entity-util :as entity-util]
             [logseq.db.frontend.rules :as rules]))
 
-(defn- get-pages-by-name
-  [db page-name]
-  (d/datoms db :avet :block/name (common-util/page-name-sanity-lc page-name)))
-
+;; FIXME: For DB graph built-in pages, look up by name -> uuid like
+;; get-built-in-page instead of this approach which is more error prone
 (defn get-first-page-by-name
   "Return the oldest page's db id for :block/name"
   [db page-name]
   (when (and db (string? page-name))
-    (first (sort (map :e (get-pages-by-name db page-name))))))
+    (first (sort (map :e (entity-util/get-pages-by-name db page-name))))))
 
 (defn get-first-page-by-title
   "Return the oldest page's db id for :block/title"
@@ -86,48 +85,8 @@
       (update block :block/link (fn [link] (d/pull db '[*] (:db/id link))))
       block)))
 
-(comment
-  (defn- property-without-db-attrs
-    [property]
-    (dissoc property :db/index :db/valueType :db/cardinality))
-
-  (defn- property-with-values
-    [db block properties]
-    (when (entity-plus/db-based-graph? db)
-      (let [block (d/entity db (:db/id block))
-            property-vals (if properties
-                            (map block properties)
-                            (vals (:block/properties block)))]
-        (->> property-vals
-             (mapcat
-              (fn [property-values]
-                (let [values (->>
-                              (if (and (coll? property-values)
-                                       (map? (first property-values)))
-                                property-values
-                                #{property-values}))
-                      value-ids (when (every? map? values)
-                                  (->> (map :db/id values)
-                                       (filter (fn [id] (or (int? id) (keyword? id))))))
-                      value-blocks (->>
-                                    (when (seq value-ids)
-                                      (map
-                                       (fn [id] (d/pull db '[:db/id :block/uuid
-                                                             :block/name :block/title
-                                                             :logseq.property/value
-                                                             :block/tags :block/page
-                                                             :logseq.property/created-from-property] id))
-                                       value-ids))
-                                  ;; FIXME: why d/pull returns {:db/id db-ident} instead of {:db/id number-eid}?
-                                    (keep (fn [block]
-                                            (let [from-property-id (get-in block [:logseq.property/created-from-property :db/id])]
-                                              (if (keyword? from-property-id)
-                                                (assoc-in block [:logseq.property/created-from-property :db/id] (:db/id (d/entity db from-property-id)))
-                                                block)))))]
-                  value-blocks))))))))
-
 (defn get-block-children-ids
-  "Returns children UUIDs"
+  "Returns children UUIDs, notice the result doesn't include property value children ids."
   [db block-uuid & {:keys [include-collapsed-children?]
                     :or {include-collapsed-children? true}}]
   (when-let [eid (:db/id (d/entity db [:block/uuid block-uuid]))]
@@ -140,7 +99,6 @@
                             (when (or include-collapsed-children?
                                       (not (:block/collapsed? e))
                                       (common-entity-util/page? e))
-
                               (:block/_parent e)))) eids-to-expand)
                 uuids-to-add (keep :block/uuid children)]
             (vswap! seen (partial apply conj) uuids-to-add)
@@ -148,12 +106,26 @@
       @seen)))
 
 (defn get-block-children
-  "Including nested children."
+  "Including nested children, notice the result doesn't include property values."
   {:arglists '([db block-uuid & {:keys [include-collapsed-children?]}])}
   [db block-uuid & {:as opts}]
   (let [ids (get-block-children-ids db block-uuid opts)]
     (when (seq ids)
       (map (fn [id] (d/entity db [:block/uuid id])) ids))))
+
+(defn get-block-full-children-ids
+  "Including nested, collapsed and property value children."
+  {:arglists '([db block-uuid])}
+  [db block-uuid]
+  (d/q
+   '[:find [?c ...]
+     :in $ ?id %
+     :where
+     [?p :block/uuid ?id]
+     (parent ?p ?c)]
+   db
+   block-uuid
+   (:parent rules/rules)))
 
 (defn- with-raw-title
   [m entity]
@@ -162,14 +134,14 @@
     m))
 
 (defn- entity->map
-  [entity & {:keys [level]
+  [entity & {:keys [level properties]
              :or {level 0}}]
   (let [opts {:level (inc level)}
         f (if (> level 0)
             identity
             (fn [e]
               (keep (fn [[k v]]
-                      (when-not (contains? #{:block/path-refs} k)
+                      (when (or (empty? properties) (properties k))
                         (let [v' (cond
                                    (= k :block/parent)
                                    (:db/id v)
@@ -177,8 +149,6 @@
                                    (map #(select-keys % [:db/id]) v)
                                    (= k :logseq.property/created-by-ref)
                                    (:db/id v)
-                                   (= k :block/refs)
-                                   (map #(select-keys % [:db/id :block/uuid :block/title :logseq.property/status :block/tags]) v)
                                    (de/entity? v)
                                    (entity->map v opts)
                                    (and (coll? v) (every? de/entity? v))
@@ -214,18 +184,19 @@
        (= (:db/id ref-block) id)
        (= id (:db/id (:block/page ref-block)))))))
 
+(defn get-block-refs
+  [db id]
+  (let [with-alias (->> (get-block-alias db id)
+                        (cons id)
+                        distinct)]
+    (some->> with-alias
+             (map #(d/entity db %))
+             (mapcat :block/_refs)
+             (remove (fn [ref-block] (hidden-ref? db ref-block id))))))
+
 (defn get-block-refs-count
   [db id]
-  (or
-   (let [with-alias (->> (get-block-alias db id)
-                         (cons id)
-                         distinct)]
-     (some->> with-alias
-              (map #(d/entity db %))
-              (mapcat :block/_refs)
-              (remove (fn [ref-block] (hidden-ref? db ref-block id)))
-              count))
-   0))
+  (count (get-block-refs db id)))
 
 (defn ^:large-vars/cleanup-todo get-block-and-children
   [db id-or-page-name {:keys [children? properties include-collapsed-children?]
@@ -244,23 +215,41 @@
                   nil))
         block-refs-count? (some #{:block.temp/refs-count} properties)]
     (when block
+      ;; (prn :debug :get-block (:db/id block) (:block/title block) :children? children?
+      ;;      :include-collapsed-children? include-collapsed-children?)
       (let [children (when children?
-                       (let [children (let [children (get-block-children db (:block/uuid block) {:include-collapsed-children? include-collapsed-children?})
-                                            children' (if (>= (count children) 100)
+                       (let [children-blocks (get-block-children db (:block/uuid block) {:include-collapsed-children? include-collapsed-children?})
+                             large-page? (>= (count children-blocks) 100)
+                             children (let [children' (if large-page?
                                                         (:block/_parent block)
-                                                        children)]
+                                                        children-blocks)]
                                         (->> children'
-                                             (remove (fn [e] (:block/closed-value-property e)))))]
+                                             (remove (fn [e] (:block/closed-value-property e)))))
+                             children-ids (set (map :db/id children))]
                          (map
                           (fn [block]
-                            (-> block
-                                (assoc :block.temp/has-children? (some? (:block/_parent block)))
-                                (dissoc :block/tx-id :block/created-at :block/updated-at)
-                                entity->map))
+                            (let [collapsed? (:block/collapsed? block)]
+                              (-> block
+                                  (entity->map)
+                                  (assoc :block.temp/has-children? (some? (:block/_parent block))
+                                         :block.temp/load-status (if (and (not collapsed?)
+                                                                          (or (and large-page?
+                                                                                   (every? children-ids (map :db/id (:block/_parent block))))
+                                                                              (not large-page?)))
+                                                                   :full
+                                                                   :self)))))
                           children)))
-            block' (cond-> (entity->map block)
+            block' (cond-> (entity->map block {:properties (set properties)})
                      block-refs-count?
-                     (assoc :block.temp/refs-count (get-block-refs-count db (:db/id block))))]
+                     (assoc :block.temp/refs-count (get-block-refs-count db (:db/id block)))
+                     true
+                     (assoc :block.temp/load-status (cond
+                                                      (and children? include-collapsed-children? (empty? properties))
+                                                      :full
+                                                      (and children? (empty? properties))
+                                                      :children
+                                                      :else
+                                                      :self)))]
         (cond->
          {:block block'}
           children?
@@ -273,10 +262,10 @@
          vec
          rseq
          (keep (fn [d]
-                 (and (<= (:v d) today)
-                      (let [e (d/entity db (:e d))]
-                        (when (and (common-entity-util/journal? e) (:db/id e))
-                          e))))))))
+                 (when (<= (:v d) today)
+                   (let [e (d/entity db (:e d))]
+                     (when (and (common-entity-util/journal? e) (:db/id e))
+                       e))))))))
 
 (defn- get-structured-datoms
   [db]
@@ -325,16 +314,17 @@
 
 (defn get-recent-updated-pages
   [db]
-  (some->>
-   (d/datoms db :avet :block/updated-at)
-   rseq
-   (keep (fn [datom]
-           (let [e (d/entity db (:e datom))]
-             (when (and (common-entity-util/page? e)
-                        (not (entity-util/hidden? e))
-                        (not (string/blank? (:block/title e))))
-               e))))
-   (take 30)))
+  (when db
+    (some->>
+     (d/datoms db :avet :block/updated-at)
+     rseq
+     (keep (fn [datom]
+             (let [e (d/entity db (:e datom))]
+               (when (and (common-entity-util/page? e)
+                          (not (entity-util/hidden? e))
+                          (not (string/blank? (:block/title e))))
+                 e))))
+     (take 30))))
 
 (defn- get-all-user-datoms
   [db]
@@ -360,6 +350,7 @@
                         :logseq.kv/graph-uuid
                         :logseq.kv/latest-code-lang
                         :logseq.kv/graph-backup-folder
+                        :logseq.kv/graph-text-embedding-model-name
                         :logseq.property/empty-placeholder])
         favorites (when db-graph? (get-favorites db))
         views (when db-graph? (get-views-data db))
@@ -371,9 +362,10 @@
         user-datoms (get-all-user-datoms db)
         pages-datoms (if db-graph?
                        (let [contents-id (get-first-page-by-title db "Contents")
+                             capture-page-id (:db/id (db-db/get-built-in-page db common-config/quick-add-page-name))
                              views-id (get-first-page-by-title db common-config/views-page-name)]
                          (mapcat #(d/datoms db :eavt %)
-                                 (remove nil? [contents-id views-id])))
+                                 (remove nil? [contents-id capture-page-id views-id])))
                        ;; load all pages for file graphs
                        (->> (d/datoms db :avet :block/name)
                             (mapcat (fn [d] (d/datoms db :eavt (:e d))))))

@@ -25,6 +25,7 @@
             [frontend.util.ref :as ref]
             [logseq.common.config :as common-config]
             [logseq.common.path :as path]
+            [logseq.graph-parser.exporter :as gp-exporter]
             [logseq.publishing.db :as publish-db]
             [medley.core :as medley]
             [promesa.core :as p]
@@ -52,7 +53,7 @@
                       (some-> url (js/decodeURIComponent)
                               (get-in-repo-assets-full-filename)
                               (string/replace '"/" "_")))
-        filekey   (util/safe-sanitize-file-name
+        filekey   (gp-exporter/safe-sanitize-file-name
                    (subs filename' 0 (- (count filename') (inc (count ext-name)))))]
     (when-let [key (and (not (string/blank? filekey))
                         (if web-link?
@@ -380,7 +381,7 @@
        (when-let [e (some->> (:key current) (str "hls__") (db-model/get-page))]
          (rfe/push-state :page {:name (str (:block/uuid e))} (if id {:anchor (str "block-content-" + id)} nil)))))))
 
-(defn open-lightbox
+(defn open-lightbox!
   [e]
   (let [images (js/document.querySelectorAll ".hl-area img")
         images (to-array images)
@@ -443,7 +444,7 @@
               {:title (t :asset/maximize)
                :tabIndex "-1"
                :on-pointer-down util/stop
-               :on-click open-lightbox}
+               :on-click open-lightbox!}
 
               (ui/icon "maximize")]]
             [:img.w-full {:src @*src}]]])))))

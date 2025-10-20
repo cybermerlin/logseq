@@ -20,6 +20,13 @@
   "Valid property types for users in order they appear in the UI"
   [:default :number :date :datetime :checkbox :url :node])
 
+(def user-allowed-internal-property-types
+  "Internal property types that users are allowed to store. These aren't available in the UI
+   so these would normally be created via EDN or the API."
+  #{:map})
+
+(assert (set/subset? user-allowed-internal-property-types internal-built-in-property-types))
+
 (def closed-value-property-types
   "Valid property :type for closed values"
   #{:default :number :url})
@@ -76,12 +83,12 @@
 ;; Validate && list fixes for non-validated values when updating property schema
 
 (defn url?
-  "Test if it is a `protocol://`-style URL.
+  "Test if it is a `protocol://`-style URL. Allows custom protocol such as `zotero`.
    Originally from common-util/url? but does not need to be the same"
   [s]
   (and (string? s)
        (try
-         (not (contains? #{nil "null"} (.-origin (js/URL. s))))
+         (not (contains? #{nil} (.-origin (js/URL. s))))
          (catch :default _e
            false))))
 

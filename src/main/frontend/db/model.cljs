@@ -99,8 +99,7 @@ independent of format as format specific heading characters are stripped"
                 (fn content-matches? [block-content external-content block-id]
                   (let [block (db-utils/entity repo block-id)
                         ref-tags (distinct (concat (:block/tags block) (:block/refs block)))]
-                    (= (-> block-content
-                           (db-content/id-ref->title-ref ref-tags)
+                    (= (-> (db-content/id-ref->title-ref block-content ref-tags)
                            (db-content/content-id-ref->page ref-tags)
                            heading-content->route-name)
                        (string/lower-case external-content))))
@@ -229,13 +228,14 @@ independent of format as format specific heading characters are stripped"
 
 (defn get-block-deep-last-open-child-id
   [db db-id]
-  (loop [node (db-utils/entity db db-id)]
-    (if-let [last-child-id (get-block-last-direct-child-id db (:db/id node) true)]
-      (let [e (db-utils/entity db last-child-id)]
-        (if (or (:block/collapsed? e) (empty? (:block/_parent e)))
-          last-child-id
-          (recur e)))
-      nil)))
+  (when db
+    (loop [node (db-utils/entity db db-id)]
+      (if-let [last-child-id (get-block-last-direct-child-id db (:db/id node) true)]
+        (let [e (db-utils/entity db last-child-id)]
+          (if (or (:block/collapsed? e) (empty? (:block/_parent e)))
+            last-child-id
+            (recur e)))
+        nil))))
 
 (def page? ldb/page?)
 
@@ -313,15 +313,6 @@ independent of format as format specific heading characters are stripped"
   (when-let [db (conn/get-db repo)]
     (ldb/get-children db block-uuid)))
 
-(defn get-block-children
-  "Including nested children."
-  [repo block-uuid]
-  (when-let [db (conn/get-db repo)]
-    (let [ids (ldb/get-block-children-ids db block-uuid)]
-      (when (seq ids)
-        (let [ids' (map (fn [id] [:block/uuid id]) ids)]
-          (db-utils/pull-many repo '[*] ids'))))))
-
 (defn get-block-and-children
   [repo block-uuid & {:as opts}]
   (let [db (conn/get-db repo)]
@@ -331,6 +322,11 @@ independent of format as format specific heading characters are stripped"
   [page-id-name-or-uuid]
   (when page-id-name-or-uuid
     (ldb/get-page (conn/get-db) page-id-name-or-uuid)))
+
+(defn get-journal-page
+  [page-name]
+  (when page-name
+    (ldb/get-journal-page (conn/get-db) page-name)))
 
 (defn get-case-page
   [page-name-or-uuid]
@@ -387,7 +383,8 @@ independent of format as format specific heading characters are stripped"
            '[:find [(pull ?block ?block-attrs) ...]
              :in $ [?ref-page ...] ?block-attrs
              :where
-             [?block :block/path-refs ?ref-page]]
+             [?r :block/name ?ref-page]
+             [?block :block/refs ?r]]
            db
            pages
            (butlast file-model/file-graph-block-attrs))
@@ -430,7 +427,8 @@ independent of format as format specific heading characters are stripped"
 (defn journal-page?
   "sanitized page-name only"
   [page-name]
-  (ldb/journal? (ldb/get-page (conn/get-db) page-name)))
+  (when (string? page-name)
+    (ldb/journal? (ldb/get-page (conn/get-db) page-name))))
 
 (defn get-all-referenced-blocks-uuid
   "Get all uuids of blocks with any back link exists."

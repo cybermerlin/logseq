@@ -17,15 +17,14 @@
             [frontend.handler.route :as route-handler]
             [frontend.handler.ui :as ui-handler]
             [frontend.idb :as idb]
-            [frontend.mobile.util :as mobile-util]
             [frontend.persist-db :as persist-db]
             [frontend.search :as search]
             [frontend.state :as state]
             [frontend.undo-redo :as undo-redo]
             [frontend.util :as util]
-            [frontend.util.fs :as util-fs]
             [frontend.util.text :as text-util]
             [logseq.common.config :as common-config]
+            [logseq.db :as ldb]
             [logseq.db.frontend.schema :as db-schema]
             [promesa.core :as p]))
 
@@ -77,7 +76,8 @@
    (when (config/global-config-enabled?)
      (global-config-handler/restore-global-config!))
     ;; Don't have to unlisten the old listener, as it will be destroyed with the conn
-   (ui-handler/add-style-if-exists!)
+   (when-not (true? (:ignore-style? opts))
+     (ui-handler/add-style-if-exists!))
    (when-not config/publishing?
      (state/set-db-restoring! false))))
 
@@ -119,10 +119,12 @@
                        nfs-dbs)
           nfs-dbs (and (seq nfs-dbs)
                        (cond (util/electron?)
-                             (ipc/ipc :inflateGraphsInfo nfs-dbs)
+                             (p/chain
+                              (ipc/ipc :inflateGraphsInfo (ldb/write-transit-str nfs-dbs))
+                              ldb/read-transit-str)
 
-                             (mobile-util/native-platform?)
-                             (util-fs/inflate-graphs-info nfs-dbs)
+                                        ;(mobile-util/native-platform?)
+                                        ;(util-fs/inflate-graphs-info nfs-dbs)
 
                              :else
                              nfs-dbs))]
@@ -138,7 +140,7 @@
                                  (some->> remote-repos
                                           (map #(assoc % :remote? true)))))]
     (let [app-major-schema-version (str (:major (db-schema/parse-schema-version db-schema/version)))
-          repos' (group-by :GraphUUID repos')
+          repos' (group-by :url repos')
           repos'' (mapcat (fn [[k vs]]
                             (if (some? k)
                               (let [remote-repos (filter :remote? vs)
@@ -170,7 +172,8 @@
                   repos
                   (concat
                    (state/get-rtc-graphs)
-                   (state/get-remote-file-graphs)))]
+                   (when-not (or (util/mobile?) util/web-platform?)
+                     (state/get-remote-file-graphs))))]
     (state/set-repos! repos')
     repos'))
 

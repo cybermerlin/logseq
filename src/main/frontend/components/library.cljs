@@ -7,7 +7,6 @@
             [frontend.search :as search]
             [frontend.state :as state]
             [frontend.ui :as ui]
-            [logseq.db :as ldb]
             [logseq.shui.hooks :as hooks]
             [logseq.shui.ui :as shui]
             [promesa.core :as p]
@@ -39,12 +38,8 @@
       :selected-choices selected-choices
       :on-chosen (fn [chosen selected?]
                    (if selected?
-                     (let [last-child (->> (:block/_parent (db/entity (:db/id library-page)))
-                                           ldb/sort-by-order
-                                           last)
-                           target (or last-child library-page)
-                           sibling? (some? last-child)]
-                       (editor-handler/move-blocks! [{:db/id chosen}] target sibling?)
+                     (let [chosen-block (db/entity chosen)]
+                       (editor-handler/move-blocks! [chosen-block] library-page {:bottom? true})
                        (set-selected-choices! (conj selected-choices chosen)))
                      (do
                        (db/transact! (state/get-current-repo)
@@ -55,11 +50,12 @@
       :input-default-placeholder "Add pages"
       :show-new-when-not-exact-match? false
       :on-input set-input!
-      :input-opts {:class "!p-1 !text-sm"}})))
+      :input-opts {:class "!p-1 !text-sm"}
+      :clear-input-on-chosen? false})))
 
 (rum/defc add-pages
   [library-page]
-  [:div.ls-add-pages.px-1
+  [:div.ls-add-pages.px-1.mt-4
    (shui/button
     {:variant :secondary
      :size :sm
@@ -72,4 +68,4 @@
                      (select-pages library-page)])
                   {:align :start}))}
     (ui/icon "plus" {:size 16})
-    "Add pages to Library")])
+    "Add existing pages to Library")])

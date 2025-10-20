@@ -41,15 +41,23 @@
   (let [remove-block-temp-f (fn [m]
                               (->> (remove (fn [[k _v]] (= "block.temp" (namespace k))) m)
                                    (into {})))]
-    (map (fn [m]
-           (if (map? m)
-             (cond->
-              (remove-block-temp-f m)
-               (and (seq (:block/refs m))
-                    (every? map? (:block/refs m)))
-               (update :block/refs (fn [refs] (map remove-block-temp-f refs))))
-             m))
-         tx-data)))
+    (keep (fn [data]
+            (cond
+              (map? data)
+              (cond->
+               (remove-block-temp-f data)
+                (and (seq (:block/refs data))
+                     (every? map? (:block/refs data)))
+                (update :block/refs (fn [refs] (map remove-block-temp-f refs))))
+              (and (vector? data)
+                   (contains? #{:db/add :db/retract} (first data))
+                   (> (count data) 2)
+                   (keyword? (nth data 2))
+                   (= "block.temp" (namespace (nth data 2))))
+              nil
+              :else
+              data))
+          tx-data)))
 
 (defn assert-no-entities
   [tx-data]
@@ -72,9 +80,12 @@
      (assert-no-entities tx-data))
    (let [tx-data (map (fn [m]
                         (if (map? m)
-                          (dissoc m :block/children :block/meta :block/top? :block/bottom? :block/anchor
-                                  :block/level :block/container :db/other-tx
-                                  :block/unordered)
+                          (cond->
+                           (dissoc m :block/children :block/meta :block/top? :block/bottom? :block/anchor
+                                   :block/level :block/container :db/other-tx
+                                   :block/unordered)
+                            (not @*transact-fn)
+                            (dissoc :block.temp/load-status))
                           m)) tx-data)
          tx-data (->> (remove-temp-block-data tx-data)
                       (common-util/fast-remove-nils)
@@ -91,12 +102,13 @@
        ;; (cljs.pprint/pprint tx-data)
        ;; (js/console.trace)
 
-       (let [f (or @*transact-fn d/transact!)]
+       (if-let [transact-fn @*transact-fn]
+         (transact-fn repo-or-conn tx-data tx-meta)
          (try
-           (f repo-or-conn tx-data tx-meta)
+           (d/transact! repo-or-conn tx-data tx-meta)
            (catch :default e
              (js/console.trace)
-             (prn :debug-tx-data tx-data)
+             (prn :debug :transact-failed :tx-meta tx-meta :tx-data tx-data)
              (throw e))))))))
 
 (def page? common-entity-util/page?)
@@ -125,8 +137,8 @@
              :as opts}]
   (if-let [children (sort-by-order
                      (if include-property-block?
-                       (:block/_raw-parent entity)
-                       (:block/_parent entity)))]
+                       (entity-plus/lookup-kv-then-entity entity :block/_raw-parent)
+                       (entity-plus/lookup-kv-then-entity entity :block/_parent)))]
     (cons entity (mapcat #(get-block-and-children-aux % opts) children))
     [entity]))
 
@@ -207,7 +219,7 @@
 (defn page-exists?
   "Returns truthy value if page exists.
    For db graphs, returns all page db ids that given title and one of the given `tags`.
-   For file graphs, returns page entity if it exists"
+   For file graphs, returns page db/id vector if it exists"
   [db page-name tags]
   (when page-name
     (if (db-based-graph? db)
@@ -238,10 +250,11 @@
             db
             (common-util/page-name-sanity-lc page-name)
             tags'))))
-      (d/entity db [:block/name (common-util/page-name-sanity-lc page-name)]))))
+      (when-let [id (:db/id (d/entity db [:block/name (common-util/page-name-sanity-lc page-name)]))]
+        [id]))))
 
 (defn get-page
-  "Get a page given its unsanitized name"
+  "Get a page given its unsanitized name or uuid"
   [db page-id-name-or-uuid]
   (when db
     (if (number? page-id-name-or-uuid)
@@ -251,16 +264,20 @@
         (d/entity db [:block/uuid id])
         (d/entity db (get-first-page-by-name db (name page-id-name-or-uuid)))))))
 
-(defn get-built-in-page
-  [db title]
+(defn get-journal-page
+  "Get a journal page given its unsanitized name.
+   This will be useful for DB graphs later as we can switch to a different lookup
+   approach for journals e.g. like get-built-in-page"
+  [db page-name]
   (when db
-    (let [id (common-uuid/gen-uuid :builtin-block-uuid title)]
-      (d/entity db [:block/uuid id]))))
+    (d/entity db (get-first-page-by-name db page-name))))
 
-(defn library?
-  [page]
-  (and (built-in? page)
-       (= common-config/library-page-name (:block/title page))))
+(def get-built-in-page db-db/get-built-in-page)
+
+(def library? db-db/library?)
+(defn get-library-page
+  [db]
+  (get-built-in-page db common-config/library-page-name))
 
 (defn get-case-page
   "Case sensitive version of get-page. For use with DB graphs"
@@ -369,7 +386,7 @@
         parents'))))
 
 (def get-block-children-ids common-initial-data/get-block-children-ids)
-(def get-block-children common-initial-data/get-block-children)
+(def get-block-full-children-ids common-initial-data/get-block-full-children-ids)
 
 (defn- get-sorted-page-block-ids
   [db page-id]
@@ -511,7 +528,7 @@
   (when db (get-key-value db :logseq.kv/remote-schema-version)))
 
 (def get-all-properties db-db/get-all-properties)
-(def get-class-extends db-db/get-class-extends)
+(def get-class-extends db-class/get-class-extends)
 (def get-classes-parents db-db/get-classes-parents)
 (def get-title-with-parents db-db/get-title-with-parents)
 (def class-instance? db-db/class-instance?)
@@ -564,3 +581,19 @@
   (if (sqlite-util/db-based-graph? repo)
     db-schema/schema
     file-schema/schema))
+
+(defn page-in-library?
+  "Check whether a `page` exists on the Library page"
+  [db page]
+  (when (page? page)
+    (when-let [library-page (get-built-in-page db common-config/library-page-name)]
+      (loop [parent (:block/parent page)]
+        (cond
+          (nil? parent)
+          false
+          (= (:db/id parent) (:db/id library-page))
+          true
+          :else
+          (recur (:block/parent parent)))))))
+
+(def get-class-title-with-extends db-db/get-class-title-with-extends)

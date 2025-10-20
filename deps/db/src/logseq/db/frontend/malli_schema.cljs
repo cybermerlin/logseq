@@ -118,7 +118,8 @@
    (set (get-in db-class/built-in-classes [:logseq.class/Asset :schema :required-properties]))
    #{:logseq.property/created-from-property :logseq.property/value
      :logseq.property.history/scalar-value :logseq.property.history/block
-     :logseq.property.history/property :logseq.property.history/ref-value}))
+     :logseq.property.history/property :logseq.property.history/ref-value
+     :logseq.property.class/extends}))
 
 (defn- property-entity->map
   "Provide the minimal number of property attributes to validate the property
@@ -222,9 +223,15 @@
    [:multi {:dispatch #(-> % first :logseq.property/type)}]
    (map (fn [[prop-type value-schema]]
           [prop-type
-           (let [schema-fn (if (vector? value-schema) (last value-schema) value-schema)]
-             [:fn (fn [tuple]
-                    (validate-property-value *db-for-validate-fns* schema-fn tuple))])])
+           (let [schema-fn (if (vector? value-schema) (last value-schema) value-schema)
+                 error-message (when (vector? value-schema)
+                                 (and (map? (second value-schema))
+                                      (:error/message (second value-schema))))]
+             [:fn
+              (when error-message
+                {:error/message error-message})
+              (fn [tuple]
+                (validate-property-value *db-for-validate-fns* schema-fn tuple))])])
         db-property-type/built-in-validation-schemas)))
 
 (def block-properties
@@ -266,8 +273,7 @@
 (def page-attrs
   "Common attributes for pages"
   [[:block/name :string]
-   [:block/title :string]
-   [:block/path-refs {:optional true} [:set :int]]])
+   [:block/title :string]])
 
 (def property-attrs
   "Common attributes for properties"
@@ -289,13 +295,20 @@
     page-or-block-attrs)))
 
 (def class-page
-  (vec
-   (concat
-    [:map
-     [:db/ident class-ident]
-     [:logseq.property.class/extends {:optional true} :int]]
-    page-attrs
-    page-or-block-attrs)))
+  [:or
+   (vec
+    (concat
+     [:map
+      [:db/ident class-ident]
+      [:logseq.property.class/extends [:set :int]]]
+     page-attrs
+     page-or-block-attrs))
+   (vec
+    (concat
+     [:map
+      [:db/ident [:= :logseq.class/Root]]]
+     page-attrs
+     page-or-block-attrs))])
 
 (def property-common-schema-attrs
   "Property :schema attributes common to all properties"
@@ -321,7 +334,8 @@
    (concat
     [:map
      [:db/ident user-property-ident]
-     [:logseq.property/type (apply vector :enum db-property-type/user-built-in-property-types)]]
+     [:logseq.property/type (apply vector :enum (into db-property-type/user-allowed-internal-property-types
+                                                      db-property-type/user-built-in-property-types))]]
     property-common-schema-attrs
     property-attrs
     page-attrs
@@ -373,7 +387,6 @@
    [:block/order block-order]
    ;; refs
    [:block/page :int]
-   [:block/path-refs {:optional true} [:set :int]]
    [:block/link {:optional true} :int]
    [:logseq.property/created-from-property {:optional true} :int]])
 
@@ -385,8 +398,7 @@
     [[:block/title :string]
      [:block/parent :int]
      ;; These blocks only associate with pages of type "whiteboard"
-     [:block/page :int]
-     [:block/path-refs {:optional true} [:set :int]]]
+     [:block/page :int]]
     page-or-block-attrs)))
 
 (def property-value-block
@@ -492,8 +504,7 @@
    [:block/uuid :uuid]
    [:block/tx-id {:optional true} :int]
    [:block/created-at {:optional true} :int]
-   [:block/updated-at {:optional true} :int]
-   [:block/properties {:optional true} block-properties]])
+   [:block/updated-at {:optional true} :int]])
 
 (defn entity-dispatch-key [db ent]
   (let [d (if (:block/uuid ent) (d/entity db [:block/uuid (:block/uuid ent)]) ent)

@@ -135,21 +135,24 @@
     (page-handler/on-chosen-handler input id pos format)))
 
 (defn- matched-pages-with-new-page [partial-matched-pages db-tag? q]
-  (if (or
-       (if db-tag?
-         (let [entity (db/get-page q)]
-           (and (ldb/internal-page? entity) (= (:block/title entity) q)))
-         ;; Page existence here should be the same as entity-util/page?.
-         ;; Don't show 'New page' if a page has any of these tags
-         (db/page-exists? q db-class/page-classes))
-
-       (and db-tag? (some ldb/class? (:block/_alias (db/get-page q)))))
-    partial-matched-pages
-    (if db-tag?
-      (concat [{:block/title (str (t :new-tag) " " q)}]
-              partial-matched-pages)
-      (cons {:block/title (str (t :new-page) " " q)}
-            partial-matched-pages))))
+  (let [ids (db/page-exists? q (if db-tag?
+                                 #{:logseq.class/Tag}
+                                 ;; Page existence here should be the same as entity-util/page?.
+                                 ;; Don't show 'New page' if a page has any of these tags
+                                 db-class/page-classes))
+        page-exists? (some (fn [id] (nil? (:block/parent (db/entity id)))) ids)]
+    (if (or page-exists?
+            (and db-tag? (some ldb/class? (:block/_alias (db/get-page q)))))
+      partial-matched-pages
+      (if db-tag?
+        (concat
+       ;; Don't show 'New tag' for an internal page because it already shows 'Convert ...'
+         (when-not (let [entity (db/get-page q)]
+                     (and (ldb/internal-page? entity) (= (:block/title entity) q)))
+           [{:block/title (str (t :new-tag) " " q)}])
+         partial-matched-pages)
+        (cons {:block/title (str (t :new-page) " " q)}
+              partial-matched-pages)))))
 
 (defn- search-pages
   [q db-tag? db-based? set-matched-pages!]
@@ -200,7 +203,7 @@
                         (let [block' (if-let [id (:block/uuid block)]
                                        (if-let [e (db/entity [:block/uuid id])]
                                          (assoc e
-                                                :block/title (:block/title block)
+                                                :block/title (or (:block/title e) (:block/title block))
                                                 :alias (:alias block))
                                          block)
                                        block)]
@@ -251,7 +254,9 @@
                                                                     "Search for a node")]
          :class "black"})
 
-       (when (and db-based? db-tag? (not (string/blank? q)))
+       (when (and db-based? db-tag?
+                  (not (string/blank? q))
+                  (not= "page" (string/lower-case q)))
          [:p.px-1.opacity-50.text-sm
           [:code (if util/mac? "Cmd+Enter" "Ctrl+Enter")]
           [:span " to display this tag inline instead of at the end of this node."]])])))
@@ -266,20 +271,20 @@
         db? (config/db-based-graph? (state/get-current-repo))
         embed? (and db? (= @commands/*current-command "Page embed"))
         tag? (= action :page-search-hashtag)
-        db-tag? (and db? tag?)]
-    (let [pos (state/get-editor-last-pos)
-          input (gdom/getElement id)]
-      (when input
-        (let [current-pos (cursor/pos input)
-              edit-content (state/sub-edit-content)
-              q (or
-                 (editor-handler/get-selected-text)
-                 (when (= action :page-search-hashtag)
-                   (common-util/safe-subs edit-content pos current-pos))
-                 (when (> (count edit-content) current-pos)
-                   (common-util/safe-subs edit-content pos current-pos))
-                 "")]
-          (page-search-aux id format embed? db-tag? q current-pos input pos))))))
+        db-tag? (and db? tag?)
+        pos (state/get-editor-last-pos)
+        input (gdom/getElement id)]
+    (when input
+      (let [current-pos (cursor/pos input)
+            edit-content (state/sub-edit-content)
+            q (or
+               (editor-handler/get-selected-text)
+               (when (= action :page-search-hashtag)
+                 (common-util/safe-subs edit-content pos current-pos))
+               (when (> (count edit-content) current-pos)
+                 (common-util/safe-subs edit-content pos current-pos))
+               "")]
+        (page-search-aux id format embed? db-tag? q current-pos input pos)))))
 
 (defn- search-blocks!
   [state result]
@@ -757,6 +762,9 @@
       (and (= type :esc) (editor-handler/editor-commands-popup-exists?))
       nil
 
+      (state/editor-in-composition?)
+      nil
+
       (or (contains?
            #{:commands :page-search :page-search-hashtag :block-search :template-search
              :property-search :property-value-search :datepicker}
@@ -772,6 +780,8 @@
       ;; exit editing mode
       :else
       (let [select? (= type :esc)]
+        (when (.closest (.-target e) ".block-content")
+          (util/mobile-keep-keyboard-open))
         (when-let [container (gdom/getElement "app-container")]
           (dom/remove-class! container "blocks-selection-mode"))
         (p/do!
@@ -819,8 +829,7 @@
                                       (when (= (util/ekey e) "Escape")
                                         (editor-on-hide state :esc e))))
                :auto-focus true
-               :autocapitalize "off"
-               :autocorrect "off"
+               :auto-capitalize "off"
                :class heading-class}
                (some? parent-block)
                (assoc :parentblockid (str (:block/uuid parent-block)))

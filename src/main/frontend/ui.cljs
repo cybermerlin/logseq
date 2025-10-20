@@ -52,7 +52,7 @@
 (defonce _emoji-init-data ((gobj/get emoji-mart "init") #js {:data emoji-data}))
 ;; (def EmojiPicker (r/adapt-class (gobj/get Picker "default")))
 
-(defonce icon-size (if (mobile-util/native-platform?) 26 20))
+(defonce icon-size (if (mobile-util/native-platform?) 24 20))
 
 (defn shui-popups? [] (some-> (shui-popup/get-popups) (count) (> 0)))
 (defn last-shui-preview-popup?
@@ -61,9 +61,11 @@
      (some-> (shui-popup/get-last-popup) :content-props :class)))
 (defn hide-popups-until-preview-popup!
   []
-  (while (and (shui-popups?)
-              (not (last-shui-preview-popup?)))
-    (shui/popup-hide!)))
+  (if (util/mobile?)
+    (shui/popup-hide!)
+    (while (and (shui-popups?)
+                (not (last-shui-preview-popup?)))
+      (shui/popup-hide!))))
 
 (def built-in-colors
   ["yellow"
@@ -293,7 +295,8 @@
               (icon "info-circle" {:class "text-indigo-500" :size "20"}))
             status)]
       [:div.ui__notifications-content
-       {:style
+       {:class (str "notification-" (name (or (when (keyword? status) status) :info)))
+        :style
         (when (or (= state "exiting")
                   (= state "exited"))
           {:z-index -1})}
@@ -395,7 +398,7 @@
 
 (defn main-node
   []
-  (gdom/getElement "main-content-container"))
+  (util/app-scroll-container-node))
 
 (defn focus-element
   [element]
@@ -808,15 +811,17 @@
       :on-pointer-up #(let [value (util/evalue %)]
                         (on-change value))}]))
 
-(rum/defcs tweet-embed < (rum/local true :loading?)
+(rum/defcs tweet-embed < rum/reactive
+  (rum/local true :loading?)
   [state id]
   (let [*loading? (:loading? state)]
-    [:div [(when @*loading? [:span.flex.items-center [svg/loading " ... loading"]])
-           (ReactTweetEmbed
-            {:id                    id
-             :class                 "contents"
-             :options               {:theme (when (= (state/sub :ui/theme) "dark") "dark")}
-             :on-tweet-load-success #(reset! *loading? false)})]]))
+    [:div
+     (when @*loading? [:span.flex.items-center [svg/loading " loading"]])
+     (ReactTweetEmbed
+      {:id                    id
+       :class                 "contents"
+       :options               {:theme (when (= (state/sub :ui/theme) "dark") "dark")}
+       :on-tweet-load-success #(reset! *loading? false)})]))
 
 (def icon shui.icon.v2/root)
 
@@ -930,8 +935,7 @@
                                      :rootMargin (str root-margin "px")
                                      :triggerOnce trigger-once?
                                      :onChange (fn [in-view? _entry]
-                                                 (when-not (= in-view? visible?)
-                                                   (set-visible! in-view?)))})
+                                                 (set-visible! in-view?))})
          ref (.-ref inViewState)]
      (lazy-visible-inner visible? content-fn ref fade-in? placeholder))))
 
@@ -1077,11 +1081,11 @@
         on-select' (if (:datetime? opts)
                      (fn [date value]
                        (let [value (or (and (string? value) value)
-                                       (.-value (gdom/getElement "time-picker")))]
-                         (let [[h m] (string/split value ":")]
-                           (when (and date selected)
-                             (.setHours date h m 0))
-                           (default-on-select date))))
+                                       (.-value (gdom/getElement "time-picker")))
+                             [h m] (string/split value ":")]
+                         (when (and date selected)
+                           (.setHours date h m 0))
+                         (default-on-select date)))
                      default-on-select)]
     [:div.flex.flex-col.gap-2.relative
      (single-calendar (assoc opts :on-select on-select'))
